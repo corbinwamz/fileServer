@@ -1,5 +1,24 @@
 # Java File Upload Server
 
+## Browser interface
+
+`WebServer.java` provides a browser interface in addition to the original TCP client.
+Copy it into `~/file-server` in Ubuntu, then run `javac WebServer.java` and
+`java WebServer` from that directory. The server creates `shared` if needed.
+Add a VirtualBox TCP forwarding rule from host `127.0.0.1:8080` to guest port
+`8080`, then visit http://localhost:8080 on Windows.
+
+Choose files and click **Upload file**, or drop files into the upload area to
+upload immediately. Multiple files upload sequentially, with a 100 MB limit
+per file. Existing filenames are rejected. The page lists regular files in
+`shared`, refreshes after uploads, and includes a manual refresh button.
+`GET /files` returns filenames as plain text; `POST /upload?name=...` receives
+raw file bytes. Authentication, HTTPS, and downloads remain future work.
+
+To update the VM from Windows, stop the running web server, copy the source with
+`scp -P 2222 WebServer.java YOUR_UBUNTU_USERNAME@127.0.0.1:~/file-server/`,
+then compile and restart it in Ubuntu. The original TCP setup is documented below.
+
 This project demonstrates TCP networking with a Java client running on Windows and a Java server running on Ubuntu Server inside a VirtualBox virtual machine. I built it to learn how to establish connections, exchange requests and responses, transfer file bytes, and accept another client after a disconnect.
 
 The server supports `PING`, `LIST`, and `UPLOAD` requests. The current client prompts for a local file path and uploads that file to the server's `shared` directory. It transfers data in 8 KB chunks and waits for the server to confirm completion. The server validates filenames, rejects negative file sizes and duplicate filenames, and removes incomplete uploads when a transfer fails.

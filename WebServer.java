@@ -20,14 +20,26 @@ public class WebServer {
         server.createContext("/upload", WebServer::receiveUpload);
         server.createContext("/files", exchange -> {
             try (exchange) {
+                if (!exchange.getRequestURI().getPath().equals("/files")) {
+                    reply(exchange, 404, "Page not found.");
+                    return;
+                }
+                if (!exchange.getRequestMethod().equals("GET")) {
+                    exchange.getResponseHeaders().set("Allow", "GET");
+                    reply(exchange, 405, "Use GET to list files.");
+                    return;
+                }
+                exchange.getResponseHeaders().set("Cache-Control", "no-store");
                 try (var files = Files.list(Path.of("shared"))) {
                     String names = files
-                        .filter(Files::isRegularFile)
+                        .filter(path -> Files.isRegularFile(path, java.nio.file.LinkOption.NOFOLLOW_LINKS))
                         .map(path -> path.getFileName().toString())
                         .sorted()
                         .collect(java.util.stream.Collectors.joining("\n"));
 
                     reply(exchange, 200, names);
+                } catch (IOException e) {
+                    reply(exchange, 500, "Unable to read the shared folder.");
                 }
             }
         });
@@ -62,6 +74,9 @@ public class WebServer {
                                  background: #1d4ed8; color: white; border: 0; border-radius: 8px; }
                         button:disabled { opacity: .5; cursor: default; }
                         input { display: block; max-width: 100%; margin-top: 8px; }
+                        #drop-zone { border: 2px dashed #94a3b8; padding: 24px; border-radius: 12px; }
+                        #drop-zone.dragging { border-color: #1d4ed8; background: #eff6ff; }
+                        li { overflow-wrap: anywhere; padding: 6px 0; }
                       </style>
                     </head>
                     <body>
@@ -70,12 +85,17 @@ public class WebServer {
                         <p class="status">Connected to the web server</p>
                         <p>Choose a file to save on your server. Maximum size: 100 MB.</p>
                         <form id="upload-form">
+                          <div id="drop-zone">
+                          <p>Drop files here, or choose files below.</p>
                           <label for="file">File to upload</label>
-                          <input id="file" type="file" required>
+                          <input id="file" type="file" multiple required>
+                          </div>
                           <button id="upload" type="submit">Upload file</button>
                         </form>
                         <p id="result" role="status" aria-live="polite"></p>
                         <h2>Files on your server</h2>
+                        <button id="refresh" type="button">Refresh files</button>
+                        <p id="files-status" role="status" aria-live="polite"></p>
                         <ul id="file-list"></ul>
                       </main>
                       <script>
@@ -83,13 +103,58 @@ public class WebServer {
                         const picker = document.querySelector('#file');
                         const button = document.querySelector('#upload');
                         const result = document.querySelector('#result');
+                        const zone = document.querySelector('#drop-zone');
+                        const refresh = document.querySelector('#refresh');
+                        const list = document.querySelector('#file-list');
+                        const filesStatus = document.querySelector('#files-status');
+                        let uploading = false;
+                        async function loadFiles() {
+                          refresh.disabled = true;
+                          filesStatus.textContent = 'Loading files…';
+                          list.replaceChildren();
+                          try {
+                            const response = await fetch('/files', {cache: 'no-store'});
+                            if (!response.ok) throw new Error('Listing failed');
+                            const text = await response.text();
+                            const names = text === '' ? [] : text.split('\\n');
+                            for (const name of names) {
+                              const item = document.createElement('li');
+                              item.textContent = name;
+                              list.append(item);
+                            }
+                            filesStatus.textContent = names.length ? names.length + ' file(s)' : 'No files uploaded yet.';
+                          } catch (error) {
+                            filesStatus.textContent = 'Unable to load files. Try refreshing.';
+                          } finally {
+                            refresh.disabled = false;
+                          }
+                        }
+                        refresh.addEventListener('click', loadFiles);
+                        loadFiles();
                         form.addEventListener('submit', async (event) => {
                           event.preventDefault();
-                          const file = picker.files[0];
-                          if (!file) return;
+                          await uploadFiles(Array.from(picker.files));
+                        });
+                        for (const eventName of ['dragover', 'drop']) {
+                          window.addEventListener(eventName, event => event.preventDefault());
+                        }
+                        zone.addEventListener('dragover', () => zone.classList.add('dragging'));
+                        zone.addEventListener('dragleave', () => zone.classList.remove('dragging'));
+                        zone.addEventListener('drop', async event => {
+                          zone.classList.remove('dragging');
+                          await uploadFiles(Array.from(event.dataTransfer.files));
+                        });
+                        async function uploadFiles(files) {
+                          if (uploading || files.length === 0) return;
+                          uploading = true;
+                          button.disabled = true;
+                          picker.disabled = true;
+                          const messages = [];
+                          try {
+                          for (const file of files) {
                           if (file.size > 100 * 1024 * 1024) {
-                            result.textContent = 'Please choose a file under 100 MB.';
-                            return;
+                            messages.push(file.name + ': exceeds the 100 MB limit.');
+                            continue;
                           }
                           button.disabled = true;
                           result.textContent = 'Uploading ' + file.name + '…';
@@ -100,14 +165,20 @@ public class WebServer {
                               body: file
                             });
                             const message = await response.text();
-                            result.textContent = message;
-                            if (response.ok) form.reset();
+                            messages.push(message);
                           } catch (error) {
-                            result.textContent = 'Connection lost. Check the server before retrying.';
-                          } finally {
-                            button.disabled = false;
+                            messages.push(file.name + ': connection lost. Refresh the list before retrying.');
                           }
-                        });
+                          }
+                          form.reset();
+                          await loadFiles();
+                          } finally {
+                            result.textContent = messages.join(' ');
+                            button.disabled = false;
+                            picker.disabled = false;
+                            uploading = false;
+                          }
+                        }
                       </script>
                     </body>
                     </html>
